@@ -1,5 +1,5 @@
 # .github/workflows/backend-compile.yml
-name: Backend Compile
+name: Hardhat Compile
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

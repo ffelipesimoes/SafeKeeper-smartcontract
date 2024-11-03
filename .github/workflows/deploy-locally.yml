@@ -1,5 +1,5 @@
 # .github/workflows/backend-deploy.yml
-name: Backend Deploy Local
+name: Hardhat Deploy Local
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
