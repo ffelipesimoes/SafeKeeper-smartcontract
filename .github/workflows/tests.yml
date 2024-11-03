@@ -6,18 +6,14 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  pull_request:
-    branches: [main, sandbox]
-    types:
-      - opened
-      - reopened
-      - synchronize
-      - ready_for_review
+  push:
+    branches:
+      - "*"
     paths:
       - src/**/*
       - contracts/**/*
       - scripts/**/*
-      - .github/workflows/backend-test-coverage.yml
+      - .github/workflows/backend-compile.yml
 
 env:
   NODE_VERSION: "20.14.0"

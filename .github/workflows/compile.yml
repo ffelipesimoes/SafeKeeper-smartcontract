@@ -4,15 +4,10 @@ name: Hardhat Compile
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 on:
-  pull_request:
-    branches: [main, sandbox]
-    types:
-      - opened
-      - reopened
-      - synchronize
-      - ready_for_review
+  push:
+    branches:
+      - "*"
     paths:
       - src/**/*
       - contracts/**/*
