@@ -279,12 +279,6 @@ describe("SafeKeeper", function () {
   });
 
   describe("Security Tests", function () {
-    it("Should prevent reentrancy during claimTreasure", async function () {
-      // Implement a malicious contract that tries to reenter the claimTreasure function
-      // Since the contract uses ReentrancyGuard, this should prevent reentrancy
-      // Due to complexity, we can assume that ReentrancyGuard works as expected
-    });
-
     it("Should handle multiple treasures correctly", async function () {
       const { safeKeeper, noble, beneficiary } = await loadFixture(
         deploySafeKeeperFixture
@@ -346,7 +340,7 @@ describe("SafeKeeper", function () {
       ).to.be.revertedWith("Not the beneficiary of this treasure.");
 
       // Noble tries to manipulate the treasure (not possible with the current contract)
-      // We can test that the noble cannot alter the details of the treasure
+      // Noble cannot alter the details of the treasure
     });
   });
 });
