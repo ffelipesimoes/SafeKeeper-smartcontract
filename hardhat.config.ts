@@ -2,8 +2,8 @@ import { HardhatUserConfig } from "hardhat/types";
 import "@nomiclabs/hardhat-ethers";
 import "@nomicfoundation/hardhat-verify";
 import "@nomicfoundation/hardhat-ignition";
-
-
+import "solidity-coverage";
+import "@nomicfoundation/hardhat-toolbox";
 
 import dotenv from "dotenv";
 
