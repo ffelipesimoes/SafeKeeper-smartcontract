@@ -1,4 +1,3 @@
-# .github/workflows/backend-deploy.yml
 name: Hardhat Deploy Local
 
 concurrency:
@@ -9,11 +8,6 @@ on:
   push:
     branches:
       - "*"
-    paths:
-      - src/**/*
-      - contracts/**/*
-      - scripts/**/*
-      - .github/workflows/backend-compile.yml
 
 env:
   NODE_VERSION: "20.14.0"
