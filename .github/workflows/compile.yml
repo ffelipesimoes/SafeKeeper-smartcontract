@@ -1,0 +1,48 @@
+# .github/workflows/backend-compile.yml
+name: Backend Compile
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    branches: [main, sandbox]
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+    paths:
+      - src/**/*
+      - contracts/**/*
+      - scripts/**/*
+      - .github/workflows/backend-compile.yml
+
+env:
+  NODE_VERSION: "20.14.0"
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/cache@v3
+        with:
+          path: "./node_modules"
+          key: ${{ runner.os }}-modules-${{ env.NODE_VERSION }}-${{ hashFiles('yarn.lock') }}
+
+      # Install dependencies
+      - name: Install dependencies
+        run: yarn --frozen-lockfile --immutable
+
+      # Lint files
+      - name: Lint files
+        run: yarn lint
+
+      # Compile contract using Hardhat
+      - name: Compile Hardhat Contracts
+        run: npx hardhat compile

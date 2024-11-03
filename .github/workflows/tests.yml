@@ -1,0 +1,59 @@
+# .github/workflows/backend-test-coverage.yml
+name: hardhat Test and Coverage
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    branches: [main, sandbox]
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+    paths:
+      - src/**/*
+      - contracts/**/*
+      - scripts/**/*
+      - .github/workflows/backend-test-coverage.yml
+
+env:
+  NODE_VERSION: "20.14.0"
+
+jobs:
+  test_and_coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/cache@v3
+        with:
+          path: "./node_modules"
+          key: ${{ runner.os }}-modules-${{ env.NODE_VERSION }}-${{ hashFiles('yarn.lock') }}
+
+      # Install dependencies
+      - name: Install dependencies
+        run: yarn --frozen-lockfile --immutable
+
+      # Compile contracts
+      - name: Compile Contracts
+        run: npx hardhat compile
+
+      # Run tests
+      - name: Run Tests
+        run: npx hardhat test
+
+      # Run coverage
+      - name: Run Coverage
+        run: npx hardhat coverage
+
+      # Upload coverage report
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: coverage/
