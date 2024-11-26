@@ -2,13 +2,14 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
 /**
  * @title SafeKeeper
  * @dev The SafeKeeper stores treasures from nobles until the right time arrives for each treasure to be claimed.
- *      This contract allows multiple treasures to be stored with individual unlock times and beneficiaries, ensuring secure
- *      storage and retrieval with anti-reentrancy protection.
+ *      This contract allows multiple treasures to be stored with individual unlock times and beneficiaries.
  */
-contract SafeKeeper is ReentrancyGuard {
+contract SafeKeeper is ReentrancyGuard, Ownable {
     /// @notice Structure to store information about each treasure.
     struct Treasure {
         uint256 amount;         // Amount of Ether stored as treasure
@@ -30,24 +31,41 @@ contract SafeKeeper is ReentrancyGuard {
     /// @dev Mapping of each heir (beneficiary) to an array of treasure IDs they can claim.
     mapping(address => uint256[]) public heirTreasures;
 
+    /// @notice Fee in basis points
+    uint256 public feeBasisPoints = 42;
+
+    /// @notice Total collected fees
+    uint256 public collectedFees;
+
+    // @notice Initializes the contract with the deployer as the owner.
+    constructor() Ownable(msg.sender) {}
+
     /// @notice Event emitted when a new treasure is stored by a noble.
     /// @param noble Address of the noble (depositor) who stored the treasure.
     /// @param beneficiary Address of the beneficiary who can claim the treasure.
-    /// @param amount Amount of Ether stored as treasure.
+    /// @param amount Amount of Ether stored as treasure (after fee deduction).
     /// @param unlockTime Timestamp when the treasure will be available for claim.
     /// @param treasureId Unique ID of the stored treasure.
     event TreasureStored(address indexed noble, address indexed beneficiary, uint256 amount, uint256 unlockTime, uint256 treasureId);
 
     /// @notice Event emitted when a treasure is successfully claimed by the beneficiary.
     /// @param beneficiary Address of the beneficiary who claimed the treasure.
-    /// @param amount Amount of Ether claimed from the treasure.
+    /// @param amount Amount of Ether claimed from the treasure (after fee deduction).
     /// @param treasureId Unique ID of the claimed treasure.
     event TreasureClaimed(address indexed beneficiary, uint256 amount, uint256 treasureId);
 
+    /// @notice Event emitted when the fee is updated.
+    /// @param newFeeBasisPoints The new fee in basis points.
+    event FeeUpdated(uint256 newFeeBasisPoints);
+
+    /// @notice Event emitted when the owner withdraws the collected fees.
+    /// @param recipient Address that received the withdrawn fees.
+    /// @param amount Amount of Ether withdrawn.
+    event FeesWithdrawn(address indexed recipient, uint256 amount);
+
     /**
      * @notice Allows a noble to store a treasure for a specified beneficiary with an unlock time.
-     * @dev Only one treasure can be stored per transaction, and treasures can have different unlock times.
-     *      Ensures the Ether sent is greater than zero and unlock time is in the future.
+     * @dev Collects a fee of 0.420% on the deposited amount.
      * @param beneficiary The address that will be able to claim the treasure after the unlock time.
      * @param unlockTime The Unix timestamp at which the treasure will become claimable.
      */
@@ -56,9 +74,14 @@ contract SafeKeeper is ReentrancyGuard {
         require(msg.value > 0, "Treasure value must be greater than zero.");
         require(unlockTime > block.timestamp, "Unlock time must be in the future.");
 
+        // Calculate fee and net amount
+        uint256 fee = (msg.value * feeBasisPoints) / 10000;
+        uint256 netAmount = msg.value - fee;
+        collectedFees += fee;
+
         // Create and store the treasure with the specified details
         treasures[nextTreasureId] = Treasure({
-            amount: msg.value,
+            amount: netAmount,
             unlockTime: unlockTime,
             claimed: false,
             noble: msg.sender,
@@ -69,7 +92,7 @@ contract SafeKeeper is ReentrancyGuard {
         nobleTreasures[msg.sender].push(nextTreasureId);
         heirTreasures[beneficiary].push(nextTreasureId);
 
-        emit TreasureStored(msg.sender, beneficiary, msg.value, unlockTime, nextTreasureId);
+        emit TreasureStored(msg.sender, beneficiary, netAmount, unlockTime, nextTreasureId);
 
         // Increment the treasure ID counter for the next treasure
         nextTreasureId++;
@@ -77,7 +100,7 @@ contract SafeKeeper is ReentrancyGuard {
 
     /**
      * @notice Allows the beneficiary to claim a specific treasure once the unlock time has passed.
-     * @dev Protects against reentrancy attacks. Ensures only the designated beneficiary can claim.
+     * @dev Collects a fee on the treasure amount at withdrawal.
      * @param treasureId The ID of the treasure to be claimed.
      */
     function claimTreasure(uint256 treasureId) external nonReentrant {
@@ -88,14 +111,44 @@ contract SafeKeeper is ReentrancyGuard {
         require(block.timestamp >= treasure.unlockTime, "Treasure not yet unlocked.");
         require(treasure.amount > 0, "No amount to claim.");
 
-        uint256 amountToClaim = treasure.amount;
-        treasure.claimed = true;     // Mark the treasure as claimed
-        treasure.amount = 0;         // Clear the amount to prevent double claims
+        // Calculate fee and net amount
+        uint256 fee = (treasure.amount * feeBasisPoints) / 10000;
+        uint256 netAmount = treasure.amount - fee;
+        collectedFees += fee;
 
-        (bool success, ) = msg.sender.call{value: amountToClaim}("");
+        treasure.claimed = true;
+        treasure.amount = 0;
+
+        (bool success, ) = msg.sender.call{value: netAmount}("");
         require(success, "Treasure transfer failed.");
 
-        emit TreasureClaimed(msg.sender, amountToClaim, treasureId);
+        emit TreasureClaimed(msg.sender, netAmount, treasureId);
+    }
+
+    /**
+     * @notice Allows the owner to set a new fee.
+     * @dev The fee is specified in basis points (1% = 100 basis points).
+     * @param newFeeBasisPoints The new fee in basis points.
+     */
+    function setFeeBasisPoints(uint256 newFeeBasisPoints) external onlyOwner {
+        require(newFeeBasisPoints <= 10000, "Fee cannot exceed 100%");
+        feeBasisPoints = newFeeBasisPoints;
+        emit FeeUpdated(newFeeBasisPoints);
+    }
+
+    /**
+     * @notice Allows the owner to withdraw the collected fees.
+     * @param recipient Address to receive the withdrawn fees.
+     */
+    function withdrawFees(address payable recipient) external onlyOwner {
+        require(recipient != address(0), "Recipient cannot be zero address");
+        uint256 amount = collectedFees;
+        collectedFees = 0;
+
+        (bool success, ) = recipient.call{value: amount}("");
+        require(success, "Withdrawal failed");
+
+        emit FeesWithdrawn(recipient, amount);
     }
 
     /**
