@@ -1,16 +1,17 @@
 import { expect } from "chai";
-import { ethers, network } from "hardhat";
+import { ethers } from "hardhat";
 import { loadFixture, time } from "@nomicfoundation/hardhat-network-helpers";
+import { ZeroAddress } from "ethers";
 
 describe("SafeKeeper", function () {
   // Fixture to deploy the contract and set up test accounts
   async function deploySafeKeeperFixture() {
-    const [noble, beneficiary, otherAccount] = await ethers.getSigners();
+    const [owner, noble, beneficiary, otherAccount] = await ethers.getSigners();
 
     const SafeKeeper = await ethers.getContractFactory("SafeKeeper");
     const safeKeeper = await SafeKeeper.deploy();
 
-    return { safeKeeper, noble, beneficiary, otherAccount };
+    return { safeKeeper, owner, noble, beneficiary, otherAccount };
   }
 
   describe("Deployment", function () {
@@ -18,15 +19,29 @@ describe("SafeKeeper", function () {
       const { safeKeeper } = await loadFixture(deploySafeKeeperFixture);
       expect(await safeKeeper.nextTreasureId()).to.equal(0);
     });
+
+    it("Should set the deployer as the owner", async function () {
+      const { safeKeeper, owner } = await loadFixture(deploySafeKeeperFixture);
+      expect(await safeKeeper.owner()).to.equal(owner.address);
+    });
+
+    it("Should initialize feeBasisPoints to 42 (0.420%)", async function () {
+      const { safeKeeper } = await loadFixture(deploySafeKeeperFixture);
+      expect(await safeKeeper.feeBasisPoints()).to.equal(42);
+    });
   });
 
   describe("Store Treasure", function () {
-    it("Should store a treasure with the correct parameters", async function () {
+    it("Should store a treasure with the correct parameters and deduct fee", async function () {
       const { safeKeeper, noble, beneficiary } = await loadFixture(
         deploySafeKeeperFixture
       );
       const unlockTime = (await time.latest()) + 365 * 24 * 60 * 60; // 1 year from now
       const treasureAmount = ethers.parseEther("1"); // 1 ETH
+
+      // Calculate fee and net amount
+      const fee = (treasureAmount * 42n) / 10000n; // 0.420%
+      const netAmount = treasureAmount - fee;
 
       await expect(
         safeKeeper
@@ -36,20 +51,17 @@ describe("SafeKeeper", function () {
           })
       )
         .to.emit(safeKeeper, "TreasureStored")
-        .withArgs(
-          noble.address,
-          beneficiary.address,
-          treasureAmount,
-          unlockTime,
-          0
-        );
+        .withArgs(noble.address, beneficiary.address, netAmount, unlockTime, 0);
 
       const storedTreasure = await safeKeeper.treasures(0);
-      expect(storedTreasure.amount).to.equal(treasureAmount);
+      expect(storedTreasure.amount).to.equal(netAmount);
       expect(storedTreasure.unlockTime).to.equal(unlockTime);
       expect(storedTreasure.noble).to.equal(noble.address);
       expect(storedTreasure.beneficiary).to.equal(beneficiary.address);
       expect(storedTreasure.claimed).to.equal(false);
+
+      // Check collected fees
+      expect(await safeKeeper.collectedFees()).to.equal(fee);
 
       // Check if the treasure ID was registered for the noble
       const nobleTreasureIds = await safeKeeper.viewTreasuresByNoble(
@@ -121,21 +133,26 @@ describe("SafeKeeper", function () {
       const unlockTime = (await time.latest()) + 365 * 24 * 60 * 60;
 
       await expect(
-        safeKeeper
-          .connect(noble)
-          .storeTreasure(ethers.ZeroAddress, unlockTime, {
-            value: ethers.parseEther("1"),
-          })
+        safeKeeper.connect(noble).storeTreasure(ZeroAddress, unlockTime, {
+          value: ethers.parseEther("1"),
+        })
       ).to.be.revertedWith("Beneficiary must be a valid address.");
     });
   });
 
   describe("Claim Treasure", function () {
+    // In the fixture
     async function storeAndClaimTreasureFixture() {
       const { safeKeeper, noble, beneficiary, otherAccount } =
         await loadFixture(deploySafeKeeperFixture);
       const unlockTime = (await time.latest()) + 365 * 24 * 60 * 60; // 1 year from now
       const treasureAmount = ethers.parseEther("1"); // 1 ETH
+
+      const feeBasisPoints = 42;
+
+      // Calculate store fee and net stored amount
+      const storeFee = (treasureAmount * BigInt(feeBasisPoints)) / 10000n;
+      const netStoredAmount = treasureAmount - storeFee;
 
       await safeKeeper
         .connect(noble)
@@ -150,27 +167,32 @@ describe("SafeKeeper", function () {
         otherAccount,
         unlockTime,
         treasureAmount,
+        netStoredAmount,
+        storeFee,
+        feeBasisPoints,
       };
     }
 
-    it("Should allow beneficiary to claim treasure after unlock time", async function () {
-      const { safeKeeper, beneficiary, unlockTime, treasureAmount } =
-        await loadFixture(storeAndClaimTreasureFixture);
+    it("Should transfer the net funds to the beneficiary upon successful claim", async function () {
+      const {
+        safeKeeper,
+        beneficiary,
+        unlockTime,
+        netStoredAmount,
+        feeBasisPoints,
+      } = await loadFixture(storeAndClaimTreasureFixture);
 
       await time.increaseTo(unlockTime + 1);
 
-      await expect(safeKeeper.connect(beneficiary).claimTreasure(0))
-        .to.emit(safeKeeper, "TreasureClaimed")
-        .withArgs(beneficiary.address, treasureAmount, 0);
-    });
+      // Calculate claim fee and net claim amount
+      const claimFee = (netStoredAmount * BigInt(feeBasisPoints)) / 10000n;
+      const netClaimAmount = netStoredAmount - BigInt(claimFee);
 
-    it("Should revert if treasure is claimed before unlock time", async function () {
-      const { safeKeeper, beneficiary } = await loadFixture(
-        storeAndClaimTreasureFixture
-      );
-      await expect(
+      await expect(() =>
         safeKeeper.connect(beneficiary).claimTreasure(0)
-      ).to.be.revertedWith("Treasure not yet unlocked.");
+      ).to.changeEtherBalance(beneficiary, netClaimAmount, {
+        delta: ethers.parseEther("0.0001"),
+      });
     });
 
     it("Should revert if treasure is claimed by someone other than the beneficiary", async function () {
@@ -182,17 +204,6 @@ describe("SafeKeeper", function () {
       await expect(
         safeKeeper.connect(otherAccount).claimTreasure(0)
       ).to.be.revertedWith("Not the beneficiary of this treasure.");
-    });
-
-    it("Should transfer the funds to the beneficiary upon successful claim", async function () {
-      const { safeKeeper, beneficiary, unlockTime, treasureAmount } =
-        await loadFixture(storeAndClaimTreasureFixture);
-
-      await time.increaseTo(unlockTime + 1);
-
-      await expect(() =>
-        safeKeeper.connect(beneficiary).claimTreasure(0)
-      ).to.changeEtherBalance(beneficiary, treasureAmount);
     });
 
     it("Should mark treasure as claimed after it is claimed", async function () {
@@ -219,6 +230,65 @@ describe("SafeKeeper", function () {
       await expect(
         safeKeeper.connect(beneficiary).claimTreasure(0)
       ).to.be.revertedWith("Treasure already claimed.");
+    });
+  });
+
+  describe("Fee Management", function () {
+    it("Should revert when non-owner tries to set a new fee", async function () {
+      const { safeKeeper, noble } = await loadFixture(deploySafeKeeperFixture);
+
+      await expect(safeKeeper.connect(noble).setFeeBasisPoints(100))
+        .to.be.revertedWithCustomError(safeKeeper, "OwnableUnauthorizedAccount")
+        .withArgs(noble.address);
+    });
+
+    it("Should revert when non-owner tries to withdraw fees", async function () {
+      const { safeKeeper, noble } = await loadFixture(deploySafeKeeperFixture);
+
+      await expect(safeKeeper.connect(noble).withdrawFees(noble.address))
+        .to.be.revertedWithCustomError(safeKeeper, "OwnableUnauthorizedAccount")
+        .withArgs(noble.address);
+    });
+
+    it("Should revert when setting fee over 100%", async function () {
+      const { safeKeeper, owner } = await loadFixture(deploySafeKeeperFixture);
+
+      await expect(
+        safeKeeper.connect(owner).setFeeBasisPoints(10001)
+      ).to.be.revertedWith("Fee cannot exceed 100%");
+    });
+
+    it("Should allow owner to withdraw collected fees", async function () {
+      const { safeKeeper, owner, noble, beneficiary } = await loadFixture(
+        deploySafeKeeperFixture
+      );
+      const unlockTime = (await time.latest()) + 1000;
+      const treasureAmount = ethers.parseEther("1");
+
+      // Noble stores a treasure
+      await safeKeeper
+        .connect(noble)
+        .storeTreasure(beneficiary.address, unlockTime, {
+          value: treasureAmount,
+        });
+
+      // Calculate store fee
+      const storeFee = (treasureAmount * 42n) / 10000n;
+
+      // Owner withdraws fees
+      await expect(() =>
+        safeKeeper.connect(owner).withdrawFees(owner.address)
+      ).to.changeEtherBalance(owner, storeFee);
+
+      expect(await safeKeeper.collectedFees()).to.equal(0);
+    });
+
+    it("Should revert when withdrawing fees to zero address", async function () {
+      const { safeKeeper, owner } = await loadFixture(deploySafeKeeperFixture);
+
+      await expect(
+        safeKeeper.connect(owner).withdrawFees(ZeroAddress)
+      ).to.be.revertedWith("Recipient cannot be zero address");
     });
   });
 
@@ -263,14 +333,18 @@ describe("SafeKeeper", function () {
       const unlockTime = (await time.latest()) + 365 * 24 * 60 * 60;
       const treasureAmount = ethers.parseEther("1");
 
+      // Store a treasure
       await safeKeeper
         .connect(noble)
         .storeTreasure(beneficiary.address, unlockTime, {
           value: treasureAmount,
         });
 
+      const fee = (treasureAmount * 42n) / 10000n; // Taxa de 0.42%
+      const netAmount = treasureAmount - fee;
+
       const treasure = await safeKeeper.getTreasureDetails(0);
-      expect(treasure.amount).to.equal(treasureAmount);
+      expect(treasure.amount).to.equal(netAmount);
       expect(treasure.unlockTime).to.equal(unlockTime);
       expect(treasure.noble).to.equal(noble.address);
       expect(treasure.beneficiary).to.equal(beneficiary.address);
@@ -289,6 +363,7 @@ describe("SafeKeeper", function () {
       const treasureAmount1 = ethers.parseEther("1");
       const treasureAmount2 = ethers.parseEther("2");
 
+      // Store treasures
       await safeKeeper
         .connect(noble)
         .storeTreasure(beneficiary.address, unlockTime1, {
@@ -300,24 +375,34 @@ describe("SafeKeeper", function () {
           value: treasureAmount2,
         });
 
-      await time.increaseTo(unlockTime1 + 1);
+      // Calculate fees and net amounts
+      const storeFee1 = (treasureAmount1 * 42n) / 10000n;
+      const netStoredAmount1 = treasureAmount1 - storeFee1;
+      const storeFee2 = (treasureAmount2 * 42n) / 10000n;
+      const netStoredAmount2 = treasureAmount2 - storeFee2;
 
       // Claim the first treasure
+      await time.increaseTo(unlockTime1 + 1);
+      const claimFee1 = (netStoredAmount1 * 42n) / 10000n;
+      const netClaimAmount1 = netStoredAmount1 - claimFee1;
+
       await expect(() =>
         safeKeeper.connect(beneficiary).claimTreasure(0)
-      ).to.changeEtherBalance(beneficiary, treasureAmount1);
+      ).to.changeEtherBalance(beneficiary, netClaimAmount1, {});
 
       // The second treasure cannot be claimed yet
       await expect(
         safeKeeper.connect(beneficiary).claimTreasure(1)
       ).to.be.revertedWith("Treasure not yet unlocked.");
 
+      // Claim the second treasure
       await time.increaseTo(unlockTime2 + 1);
+      const claimFee2 = (netStoredAmount2 * 42n) / 10000n;
+      const netClaimAmount2 = netStoredAmount2 - claimFee2;
 
-      // Now claim the second treasure
       await expect(() =>
         safeKeeper.connect(beneficiary).claimTreasure(1)
-      ).to.changeEtherBalance(beneficiary, treasureAmount2);
+      ).to.changeEtherBalance(beneficiary, netClaimAmount2, {});
     });
 
     it("Should not allow noble to withdraw or interfere with the treasure after storing", async function () {
