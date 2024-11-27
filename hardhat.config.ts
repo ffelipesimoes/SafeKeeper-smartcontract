@@ -4,6 +4,7 @@ import "@nomicfoundation/hardhat-verify";
 import "@nomicfoundation/hardhat-ignition";
 import "solidity-coverage";
 import "@nomicfoundation/hardhat-toolbox";
+import("@nomicfoundation/hardhat-ledger");
 
 import dotenv from "dotenv";
 
@@ -21,12 +22,17 @@ const config: HardhatUserConfig = {
       url: "https://ethereum-holesky-rpc.publicnode.com",
       accounts: [PRIVATE_KEY],
     },
+    polygon: {
+      url: "https://polygon.drpc.org",
+      ledgerAccounts: ["hardwallet_address"],
+    },
   },
   etherscan: {
     apiKey: {
       sepolia: process.env.ETHERSCAN_API!,
       holesky: process.env.ETHERSCAN_API!,
       polygonAmoy: process.env.POLYGONSCAN_API!,
+      polygon: process.env.POLYGONSCAN_API!,
     },
     customChains: [
       {
